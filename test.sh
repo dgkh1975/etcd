@@ -54,9 +54,6 @@ if [ -z "$GOARCH" ]; then
   GOARCH=$(go env GOARCH);
 fi
 
-# determine the number of CPUs to use for Go tests
-CPU=${CPU:-"4"}
-
 # determine whether target supports race detection
 if [ -z "${RACE}" ] ; then
   if [ "$GOARCH" == "amd64" ]; then
@@ -69,7 +66,11 @@ else
 fi
 
 # This options make sense for cases where SUT (System Under Test) is compiled by test.
-COMMON_TEST_FLAGS=("-cpu=${CPU}" "${RACE}")
+COMMON_TEST_FLAGS=("${RACE}")
+if [[ -n "${CPU}" ]]; then
+  COMMON_TEST_FLAGS+=("--cpu=${CPU}")
+fi 
+
 log_callout "Running with ${COMMON_TEST_FLAGS[*]}"
 
 RUN_ARG=()
@@ -109,7 +110,7 @@ function integration_extra {
 
 function integration_pass {
   local pkgs=${USERPKG:-"./integration/..."}
-  run_for_module "tests" go_test "${pkgs}" "parallel" : -timeout="${TIMEOUT:-30m}" "${COMMON_TEST_FLAGS[@]}" "${RUN_ARG[@]}" "$@" || return $?
+  run_for_module "tests" go_test "${pkgs}" "parallel" : -timeout="${TIMEOUT:-15m}" "${COMMON_TEST_FLAGS[@]}" "${RUN_ARG[@]}" "$@" || return $?
   integration_extra "$@"
 }
 
@@ -173,13 +174,13 @@ function functional_pass {
   kill -s TERM "${agent_pids[@]}" || true
 
   if [[ "${etcd_tester_exit_code}" -ne "0" ]]; then
-    log_error -e "\nFAILED! 'tail -1000 /tmp/etcd-functional-1/etcd.log'"
+    log_error -e "\\nFAILED! 'tail -1000 /tmp/etcd-functional-1/etcd.log'"
     tail -1000 /tmp/etcd-functional-1/etcd.log
 
-    log_error -e "\nFAILED! 'tail -1000 /tmp/etcd-functional-2/etcd.log'"
+    log_error -e "\\nFAILED! 'tail -1000 /tmp/etcd-functional-2/etcd.log'"
     tail -1000 /tmp/etcd-functional-2/etcd.log
 
-    log_error -e "\nFAILED! 'tail -1000 /tmp/etcd-functional-3/etcd.log'"
+    log_error -e "\\nFAILED! 'tail -1000 /tmp/etcd-functional-3/etcd.log'"
     tail -1000 /tmp/etcd-functional-3/etcd.log
 
     log_error "--- FAIL: exit code" ${etcd_tester_exit_code}
@@ -342,6 +343,7 @@ function cov_pass {
   sed --in-place -E "s|go.etcd.io/etcd/api/v3/|api/|g" "${cover_out_file}" || true
   sed --in-place -E "s|go.etcd.io/etcd/client/v3/|client/v3/|g" "${cover_out_file}" || true
   sed --in-place -E "s|go.etcd.io/etcd/client/v2/|client/v2/|g" "${cover_out_file}" || true
+  sed --in-place -E "s|go.etcd.io/etcd/client/pkg/v3|client/pkg/v3/|g" "${cover_out_file}" || true
   sed --in-place -E "s|go.etcd.io/etcd/etcdctl/v3/|etcdctl/|g" "${cover_out_file}" || true
   sed --in-place -E "s|go.etcd.io/etcd/pkg/v3/|pkg/|g" "${cover_out_file}" || true
   sed --in-place -E "s|go.etcd.io/etcd/raft/v3/|raft/|g" "${cover_out_file}" || true
@@ -367,8 +369,8 @@ function fmt_pass {
 
   # TODO: add "unparam","staticcheck", "unconvert", "ineffasign","nakedret"
   # after resolving ore-existing errors.
+  # markdown_you  -  too sensitive check was temporarilly disbled. 
   for p in shellcheck \
-      markdown_you \
       goword \
       gofmt \
       govet \
@@ -391,18 +393,19 @@ function shellcheck_pass {
 }
 
 function shellws_pass {
+  TAB=$'\t'
   log_callout "Ensuring no tab-based indention in shell scripts"
   local files
   files=$(find ./ -name '*.sh' -print0 | xargs -0 )
   # shellcheck disable=SC2206
   files=( ${files[@]} "./scripts/build-binary" "./scripts/build-docker" "./scripts/release" )
-  log_cmd "grep -E -n $'^ *\t' ${files[*]}"
+  log_cmd "grep -E -n $'^ *${TAB}' ${files[*]}"
   # shellcheck disable=SC2086
-  if grep -E -n $'^ *\t' "${files[@]}" | sed $'s|\t|[\\\\tab]|g'; then
+  if grep -E -n $'^ *${TAB}' "${files[@]}" | sed $'s|${TAB}|[\\\\tab]|g'; then
     log_error "FAIL: found tab-based indention in bash scripts. Use '  ' (double space)."
     local files_with_tabs
-    files_with_tabs=$(grep -E -l $'^ *\t' "${files[@]}")
-    log_warning "Try: sed -i 's|\t|  |g' $files_with_tabs"
+    files_with_tabs=$(grep -E -l $'^ *\\t' "${files[@]}")
+    log_warning "Try: sed -i 's|\\t|  |g' $files_with_tabs"
     return 1
   else
     log_success "SUCCESS: no tabulators found."
@@ -411,7 +414,7 @@ function shellws_pass {
 }
 
 function markdown_you_find_eschew_you {
-  local find_you_cmd="find . -name \*.md ! -path '*/vendor/*' ! -path './Documentation/*' ! -path './gopath.proto/*' ! -path './release/*' -exec grep -E --color '[Yy]ou[r]?[ '\''.,;]' {} + || true"
+  local find_you_cmd="find . -name \\*.md ! -path '*/vendor/*' ! -path './Documentation/*' ! -path './gopath.proto/*' ! -path './release/*' -exec grep -E --color '[Yy]ou[r]?[ '\\''.,;]' {} + || true"
   run eval "${find_you_cmd}"
 }
 
@@ -489,7 +492,7 @@ function receiver_name_for_package {
   while IFS= read -r line; do gofiles+=("$line"); done < <(go_srcs_in_module "$1")
 
   recvs=$(grep 'func ([^*]' "${gofiles[@]}"  | tr  ':' ' ' |  \
-    awk ' { print $2" "$3" "$4" "$1 }' | sed "s/[a-zA-Z\.]*go//g" |  sort  | uniq  | \
+    awk ' { print $2" "$3" "$4" "$1 }' | sed "s/[a-zA-Z\\.]*go//g" |  sort  | uniq  | \
     grep -Ev  "(Descriptor|Proto|_)"  | awk ' { print $3" "$4 } ' | sort | uniq -c | grep -v ' 1 ' | awk ' { print $2 } ')
   if [ -n "${recvs}" ]; then
     # shellcheck disable=SC2206
@@ -565,7 +568,7 @@ function bom_pass {
   run cp go.mod.tmp go.mod || return 2
 
   if [ "${code}" -ne 0 ] ; then
-    log_error -e "license-bill-of-materials (code: ${code}) failed with:\n${output}"
+    log_error -e "license-bill-of-materials (code: ${code}) failed with:\\n${output}"
     return 255
   else
     echo "${output}" > "bom-now.json.tmp"
@@ -597,7 +600,7 @@ function dep_pass {
 
   for dup in ${duplicates}; do
     log_error "FAIL: inconsistent versions for depencency: ${dup}"
-    echo "${all_dependencies}" | grep "${dup}" | sed "s|\([^,]*\),\([^,]*\),\([^,]*\)|  - \1@\2 from: \3|g"
+    echo "${all_dependencies}" | grep "${dup}" | sed "s|\\([^,]*\\),\\([^,]*\\),\\([^,]*\\)|  - \\1@\\2 from: \\3|g"
   done
   if [[ -n "${duplicates}" ]]; then
     log_error "FAIL: inconsistent dependencies"
@@ -610,7 +613,7 @@ function dep_pass {
 function release_pass {
   rm -f ./bin/etcd-last-release
   # to grab latest patch release; bump this up for every minor release
-  UPGRADE_VER=$(git tag -l --sort=-version:refname "v3.3.*" | head -1)
+  UPGRADE_VER=$(git tag -l --sort=-version:refname "v3.4.*" | head -1)
   if [ -n "$MANUAL_VER" ]; then
     # in case, we need to test against different version
     UPGRADE_VER=$MANUAL_VER
@@ -643,7 +646,7 @@ function mod_tidy_for_module {
   # Watch for upstream solution: https://github.com/golang/go/issues/27005
   local tmpModDir
   tmpModDir=$(mktemp -d -t 'tmpModDir.XXXXXX')
-  run cp "./go.mod" "./go.sum" "${tmpModDir}" || return 2
+  run cp "./go.mod" "${tmpModDir}" || return 2
 
   # Guarantees keeping go.sum minimal
   # If this is causing too much problems, we should
@@ -656,21 +659,11 @@ function mod_tidy_for_module {
   diff -C 5 "${tmpModDir}/go.mod" "./go.mod"
   tmpFileGoModInSync="$?"
 
-  local tmpFileGoSumInSync
-  diff -C 5 "${tmpModDir}/go.sum" "./go.sum"
-  tmpFileGoSumInSync="$?"
-  set -e
-
   # Bring back initial state
   mv "${tmpModDir}/go.mod" "./go.mod"
-  mv "${tmpModDir}/go.sum" "./go.sum"
 
   if [ "${tmpFileGoModInSync}" -ne 0 ]; then
     log_error "${PWD}/go.mod is not in sync with 'go mod tidy'"
-    return 255
-  fi
-  if [ "${tmpFileGoSumInSync}" -ne 0 ]; then
-    log_error "${PWD}/go.sum is not in sync with 'rm go.sum; go mod tidy'"
     return 255
   fi
 }
@@ -684,7 +677,7 @@ function mod_tidy_pass {
 function run_pass {
   local pass="${1}"
   shift 1
-  log_callout -e "\n'${pass}' started at $(date)"
+  log_callout -e "\\n'${pass}' started at $(date)"
   if "${pass}_pass" "$@" ; then
     log_success "'${pass}' completed at $(date)"
   else

@@ -22,15 +22,15 @@ import (
 	"time"
 
 	"go.etcd.io/etcd/api/v3/version"
-	"go.etcd.io/etcd/pkg/v3/fileutil"
+	"go.etcd.io/etcd/client/pkg/v3/fileutil"
+	"go.etcd.io/etcd/client/pkg/v3/testutil"
 	"go.etcd.io/etcd/pkg/v3/flags"
-	"go.etcd.io/etcd/pkg/v3/testutil"
 )
 
 func TestCtlV3Version(t *testing.T) { testCtl(t, versionTest) }
 
 func TestClusterVersion(t *testing.T) {
-	skipInShortMode(t)
+	BeforeTest(t)
 
 	tests := []struct {
 		name         string
@@ -52,7 +52,7 @@ func TestClusterVersion(t *testing.T) {
 			if !fileutil.Exist(binary) {
 				t.Skipf("%q does not exist", binary)
 			}
-			defer testutil.AfterTest(t)
+			BeforeTest(t)
 			cfg := newConfigNoTLS()
 			cfg.execPath = binary
 			cfg.snapshotCount = 3
@@ -198,7 +198,7 @@ func withFlagByEnv() ctlOption {
 }
 
 func testCtl(t *testing.T, testFunc func(ctlCtx), opts ...ctlOption) {
-	defer testutil.AfterTest(t)
+	BeforeTest(t)
 
 	ret := ctlCtx{
 		t:           t,
@@ -250,6 +250,7 @@ func testCtl(t *testing.T, testFunc func(ctlCtx), opts ...ctlOption) {
 		testutil.FatalStack(t, fmt.Sprintf("test timed out after %v", timeout))
 	case <-donec:
 	}
+	t.Log("---Test logic DONE")
 }
 
 func (cx *ctlCtx) prefixArgs(eps []string) []string {

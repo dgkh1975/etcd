@@ -10,7 +10,8 @@ import (
 	"runtime"
 	"testing"
 
-	"go.etcd.io/etcd/pkg/v3/testutil"
+	"go.etcd.io/etcd/client/pkg/v3/testutil"
+	"go.etcd.io/etcd/tests/v3/integration"
 )
 
 var (
@@ -36,8 +37,11 @@ func TestMain(m *testing.M) {
 	os.Setenv("ETCD_UNSUPPORTED_ARCH", runtime.GOARCH)
 	os.Unsetenv("ETCDCTL_API")
 
-	flag.StringVar(&binDir, "bin-dir", "../../bin", "The directory for store etcd and etcdctl binaries.")
-	flag.StringVar(&certDir, "cert-dir", "../fixtures", "The directory for store certificate files.")
+	binDirDef := integration.MustAbsPath("../../bin")
+	certDirDef := fixturesDir
+
+	flag.StringVar(&binDir, "bin-dir", binDirDef, "The directory for store etcd and etcdctl binaries.")
+	flag.StringVar(&certDir, "cert-dir", certDirDef, "The directory for store certificate files.")
 	flag.Parse()
 
 	binPath = binDir + "/etcd"

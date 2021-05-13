@@ -35,15 +35,13 @@ import (
 
 var (
 	keyBucketName  = []byte("key")
-	metaBucketName = []byte("meta")
+	metaBucketName = cindex.MetaBucketName
 
-	consistentIndexKeyName  = []byte("consistent_index")
 	scheduledCompactKeyName = []byte("scheduledCompactRev")
 	finishedCompactKeyName  = []byte("finishedCompactRev")
 
 	ErrCompacted = errors.New("mvcc: required revision has been compacted")
 	ErrFutureRev = errors.New("mvcc: required revision is a future revision")
-	ErrCanceled  = errors.New("mvcc: watcher is canceled")
 )
 
 const (
@@ -71,8 +69,6 @@ type store struct {
 	// mu read locks for txns and write locks for non-txn store changes.
 	mu sync.RWMutex
 
-	ci cindex.ConsistentIndexer
-
 	b       backend.Backend
 	kvindex index
 
@@ -96,7 +92,7 @@ type store struct {
 
 // NewStore returns a new store. It is useful to create a store inside
 // mvcc pkg. It should only be used for testing externally.
-func NewStore(lg *zap.Logger, b backend.Backend, le lease.Lessor, ci cindex.ConsistentIndexer, cfg StoreConfig) *store {
+func NewStore(lg *zap.Logger, b backend.Backend, le lease.Lessor, cfg StoreConfig) *store {
 	if lg == nil {
 		lg = zap.NewNop()
 	}
@@ -106,7 +102,6 @@ func NewStore(lg *zap.Logger, b backend.Backend, le lease.Lessor, ci cindex.Cons
 	s := &store{
 		cfg:     cfg,
 		b:       b,
-		ci:      ci,
 		kvindex: newTreeIndex(lg),
 
 		le: le,
@@ -129,7 +124,7 @@ func NewStore(lg *zap.Logger, b backend.Backend, le lease.Lessor, ci cindex.Cons
 	tx := s.b.BatchTx()
 	tx.Lock()
 	tx.UnsafeCreateBucket(keyBucketName)
-	tx.UnsafeCreateBucket(metaBucketName)
+	cindex.UnsafeCreateMetaBucket(tx)
 	tx.Unlock()
 	s.b.ForceCommit()
 
@@ -268,7 +263,7 @@ func (s *store) compact(trace *traceutil.Trace, rev int64) (<-chan struct{}, err
 		keep := s.kvindex.Compact(rev)
 		indexCompactionPauseMs.Observe(float64(time.Since(start) / time.Millisecond))
 		if !s.scheduleCompaction(rev, keep) {
-			s.compactBarrier(nil, ch)
+			s.compactBarrier(context.TODO(), ch)
 			return
 		}
 		close(ch)
@@ -309,18 +304,13 @@ func init() {
 	DefaultIgnores = map[backend.IgnoreKey]struct{}{
 		// consistent index might be changed due to v2 internal sync, which
 		// is not controllable by the user.
-		{Bucket: string(metaBucketName), Key: string(consistentIndexKeyName)}: {},
+		{Bucket: string(metaBucketName), Key: string(cindex.ConsistentIndexKeyName)}: {},
 	}
 }
 
 func (s *store) Commit() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	tx := s.b.BatchTx()
-	tx.Lock()
-	s.saveIndex(tx)
-	tx.Unlock()
 	s.b.ForceCommit()
 }
 
@@ -344,8 +334,6 @@ func (s *store) Restore(b backend.Backend) error {
 
 	s.fifoSched = schedule.NewFIFOScheduler()
 	s.stopc = make(chan struct{})
-	s.ci.SetBatchTx(b.BatchTx())
-	s.ci.SetConsistentIndex(0)
 
 	return s.restore()
 }
@@ -438,6 +426,8 @@ func (s *store) restore() error {
 
 	tx.Unlock()
 
+	s.lg.Info("kvstore restored", zap.Int64("current-rev", s.currentRev))
+
 	if scheduledCompact != 0 {
 		if _, err := s.compactLockfree(scheduledCompact); err != nil {
 			s.lg.Warn("compaction encountered error", zap.Error(err))
@@ -529,19 +519,6 @@ func (s *store) Close() error {
 	close(s.stopc)
 	s.fifoSched.Stop()
 	return nil
-}
-
-func (s *store) saveIndex(tx backend.BatchTx) {
-	if s.ci != nil {
-		s.ci.UnsafeSave(tx)
-	}
-}
-
-func (s *store) ConsistentIndex() uint64 {
-	if s.ci != nil {
-		return s.ci.ConsistentIndex()
-	}
-	return 0
 }
 
 func (s *store) setupMetricsReporter() {

@@ -15,17 +15,26 @@
 package embed
 
 import (
+	"errors"
 	"fmt"
 	"io/ioutil"
+	"net"
 	"net/url"
 	"os"
 	"testing"
 	"time"
 
-	"go.etcd.io/etcd/pkg/v3/transport"
+	"go.etcd.io/etcd/client/pkg/v3/srv"
+	"go.etcd.io/etcd/client/pkg/v3/transport"
+	"go.etcd.io/etcd/client/pkg/v3/types"
 
 	"sigs.k8s.io/yaml"
 )
+
+func notFoundErr(service, domain string) error {
+	name := fmt.Sprintf("_%s._tcp.%s", service, domain)
+	return &net.DNSError{Err: "no such host", Name: name, Server: "10.0.0.53:53", IsTimeout: false, IsTemporary: false, IsNotFound: true}
+}
 
 func TestConfigFileOtherFields(t *testing.T) {
 	ctls := securityConfig{TrustedCAFile: "cca", CertFile: "ccert", KeyFile: "ckey"}
@@ -84,7 +93,7 @@ func TestUpdateDefaultClusterFromName(t *testing.T) {
 
 	// in case of 'etcd --name=abc'
 	exp := fmt.Sprintf("%s=%s://localhost:%s", cfg.Name, oldscheme, lpport)
-	cfg.UpdateDefaultClusterFromName(defaultInitialCluster)
+	_, _ = cfg.UpdateDefaultClusterFromName(defaultInitialCluster)
 	if exp != cfg.InitialCluster {
 		t.Fatalf("initial-cluster expected %q, got %q", exp, cfg.InitialCluster)
 	}
@@ -199,5 +208,159 @@ func TestAutoCompactionModeParse(t *testing.T) {
 		if dur != tt.wdur {
 			t.Errorf("#%d: duration = %s, want %s", i, dur, tt.wdur)
 		}
+	}
+}
+
+func TestPeerURLsMapAndTokenFromSRV(t *testing.T) {
+	defer func() { getCluster = srv.GetCluster }()
+
+	tests := []struct {
+		withSSL    []string
+		withoutSSL []string
+		apurls     []string
+		wurls      string
+		werr       bool
+	}{
+		{
+			[]string{},
+			[]string{},
+			[]string{"http://localhost:2380"},
+			"",
+			true,
+		},
+		{
+			[]string{"1.example.com=https://1.example.com:2380", "0=https://2.example.com:2380", "1=https://3.example.com:2380"},
+			[]string{},
+			[]string{"https://1.example.com:2380"},
+			"0=https://2.example.com:2380,1.example.com=https://1.example.com:2380,1=https://3.example.com:2380",
+			false,
+		},
+		{
+			[]string{"1.example.com=https://1.example.com:2380"},
+			[]string{"0=http://2.example.com:2380", "1=http://3.example.com:2380"},
+			[]string{"https://1.example.com:2380"},
+			"0=http://2.example.com:2380,1.example.com=https://1.example.com:2380,1=http://3.example.com:2380",
+			false,
+		},
+		{
+			[]string{},
+			[]string{"1.example.com=http://1.example.com:2380", "0=http://2.example.com:2380", "1=http://3.example.com:2380"},
+			[]string{"http://1.example.com:2380"},
+			"0=http://2.example.com:2380,1.example.com=http://1.example.com:2380,1=http://3.example.com:2380",
+			false,
+		},
+	}
+
+	hasErr := func(err error) bool {
+		return err != nil
+	}
+
+	for i, tt := range tests {
+		getCluster = func(serviceScheme string, service string, name string, dns string, apurls types.URLs) ([]string, error) {
+			var urls []string
+			if serviceScheme == "https" && service == "etcd-server-ssl" {
+				urls = tt.withSSL
+			} else if serviceScheme == "http" && service == "etcd-server" {
+				urls = tt.withoutSSL
+			}
+			if len(urls) > 0 {
+				return urls, nil
+			}
+			return urls, notFoundErr(service, dns)
+		}
+
+		cfg := NewConfig()
+		cfg.Name = "1.example.com"
+		cfg.InitialCluster = ""
+		cfg.InitialClusterToken = ""
+		cfg.DNSCluster = "example.com"
+		cfg.APUrls = types.MustNewURLs(tt.apurls)
+
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("#%d: failed to validate test Config: %v", i, err)
+			continue
+		}
+
+		urlsmap, _, err := cfg.PeerURLsMapAndToken("etcd")
+		if urlsmap.String() != tt.wurls {
+			t.Errorf("#%d: urlsmap = %s, want = %s", i, urlsmap.String(), tt.wurls)
+		}
+		if hasErr(err) != tt.werr {
+			t.Errorf("#%d: err = %v, want = %v", i, err, tt.werr)
+		}
+	}
+}
+
+func TestLogRotation(t *testing.T) {
+	tests := []struct {
+		name              string
+		logOutputs        []string
+		logRotationConfig string
+		wantErr           bool
+		wantErrMsg        error
+	}{
+		{
+			name:              "mixed log output targets",
+			logOutputs:        []string{"stderr", "/tmp/path"},
+			logRotationConfig: `{"maxsize": 1}`,
+		},
+		{
+			name:              "no file targets",
+			logOutputs:        []string{"stderr"},
+			logRotationConfig: `{"maxsize": 1}`,
+			wantErr:           true,
+			wantErrMsg:        ErrLogRotationInvalidLogOutput,
+		},
+		{
+			name:              "multiple file targets",
+			logOutputs:        []string{"/tmp/path1", "/tmp/path2"},
+			logRotationConfig: DefaultLogRotationConfig,
+			wantErr:           true,
+			wantErrMsg:        ErrLogRotationInvalidLogOutput,
+		},
+		{
+			name:              "default output",
+			logRotationConfig: `{"maxsize": 1}`,
+			wantErr:           true,
+			wantErrMsg:        ErrLogRotationInvalidLogOutput,
+		},
+		{
+			name:              "default log rotation config",
+			logOutputs:        []string{"/tmp/path"},
+			logRotationConfig: DefaultLogRotationConfig,
+		},
+		{
+			name:              "invalid logger config",
+			logOutputs:        []string{"/tmp/path"},
+			logRotationConfig: `{"maxsize": true}`,
+			wantErr:           true,
+			wantErrMsg:        errors.New("invalid log rotation config: json: cannot unmarshal bool into Go struct field logRotationConfig.maxsize of type int"),
+		},
+		{
+			name:              "improperly formatted logger config",
+			logOutputs:        []string{"/tmp/path"},
+			logRotationConfig: `{"maxsize": true`,
+			wantErr:           true,
+			wantErrMsg:        errors.New("improperly formatted log rotation config: unexpected end of JSON input"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := NewConfig()
+			cfg.Logger = "zap"
+			cfg.LogOutputs = tt.logOutputs
+			cfg.EnableLogRotation = true
+			cfg.LogRotationConfigJSON = tt.logRotationConfig
+			err := cfg.Validate()
+			if err != nil && !tt.wantErr {
+				t.Errorf("test %q, unexpected error %v", tt.name, err)
+			}
+			if err != nil && tt.wantErr && tt.wantErrMsg.Error() != err.Error() {
+				t.Errorf("test %q, expected error: %+v, got: %+v", tt.name, tt.wantErrMsg, err)
+			}
+			if err == nil && tt.wantErr {
+				t.Errorf("test %q, expected error, got nil", tt.name)
+			}
+		})
 	}
 }

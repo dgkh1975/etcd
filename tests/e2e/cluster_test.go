@@ -16,19 +16,24 @@ package e2e
 
 import (
 	"fmt"
-	"io/ioutil"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 	"testing"
 	"time"
 
 	"go.etcd.io/etcd/server/v3/etcdserver"
+	"go.etcd.io/etcd/tests/v3/integration"
 )
 
 const etcdProcessBasePort = 20000
 
 type clientConnType int
+
+var (
+	fixturesDir = integration.MustAbsPath("../fixtures")
+)
 
 const (
 	clientNonTLS clientConnType = iota
@@ -114,9 +119,10 @@ func newConfigClientTLSCertAuthWithNoCN() *etcdProcessClusterConfig {
 
 func newConfigJWT() *etcdProcessClusterConfig {
 	return &etcdProcessClusterConfig{
-		clusterSize:   1,
-		initialToken:  "new",
-		authTokenOpts: "jwt,pub-key=../fixtures/server.crt,priv-key=../fixtures/server.key.insecure,sign-method=RS256,ttl=1s",
+		clusterSize:  1,
+		initialToken: "new",
+		authTokenOpts: "jwt,pub-key=" + path.Join(fixturesDir, "server.crt") +
+			",priv-key=" + path.Join(fixturesDir, "server.key.insecure") + ",sign-method=RS256,ttl=1s",
 	}
 }
 
@@ -162,6 +168,7 @@ type etcdProcessClusterConfig struct {
 	enableV2            bool
 	initialCorruptCheck bool
 	authTokenOpts       string
+	v2deprecation       string
 
 	rollingStart bool
 }
@@ -171,7 +178,7 @@ type etcdProcessClusterConfig struct {
 func newEtcdProcessCluster(t testing.TB, cfg *etcdProcessClusterConfig) (*etcdProcessCluster, error) {
 	skipInShortMode(t)
 
-	etcdCfgs := cfg.etcdServerProcessConfigs()
+	etcdCfgs := cfg.etcdServerProcessConfigs(t)
 	epc := &etcdProcessCluster{
 		cfg:   cfg,
 		procs: make([]etcdProcess, cfg.clusterSize),
@@ -182,18 +189,18 @@ func newEtcdProcessCluster(t testing.TB, cfg *etcdProcessClusterConfig) (*etcdPr
 		proc, err := newEtcdProcess(etcdCfgs[i])
 		if err != nil {
 			epc.Close()
-			return nil, err
+			return nil, fmt.Errorf("Cannot configure: %v", err)
 		}
 		epc.procs[i] = proc
 	}
 
 	if cfg.rollingStart {
 		if err := epc.RollingStart(); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("Cannot rolling-start: %v", err)
 		}
 	} else {
 		if err := epc.Start(); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("Cannot start: %v", err)
 		}
 	}
 	return epc, nil
@@ -217,7 +224,7 @@ func (cfg *etcdProcessClusterConfig) peerScheme() string {
 	return peerScheme
 }
 
-func (cfg *etcdProcessClusterConfig) etcdServerProcessConfigs() []*etcdServerProcessConfig {
+func (cfg *etcdProcessClusterConfig) etcdServerProcessConfigs(tb testing.TB) []*etcdServerProcessConfig {
 	if cfg.basePort == 0 {
 		cfg.basePort = etcdProcessBasePort
 	}
@@ -247,14 +254,10 @@ func (cfg *etcdProcessClusterConfig) etcdServerProcessConfigs() []*etcdServerPro
 		}
 
 		purl := url.URL{Scheme: cfg.peerScheme(), Host: fmt.Sprintf("localhost:%d", port+1)}
-		name := fmt.Sprintf("testname%d", i)
+		name := fmt.Sprintf("test-%d", i)
 		dataDirPath := cfg.dataDirPath
 		if cfg.dataDirPath == "" {
-			var derr error
-			dataDirPath, derr = ioutil.TempDir("", name+".etcd")
-			if derr != nil {
-				panic(fmt.Sprintf("could not get tempdir for datadir: %s", derr))
-			}
+			dataDirPath = tb.TempDir()
 		}
 		initialCluster[i] = fmt.Sprintf("%s=%s", name, purl.String())
 
@@ -299,6 +302,10 @@ func (cfg *etcdProcessClusterConfig) etcdServerProcessConfigs() []*etcdServerPro
 
 		if cfg.authTokenOpts != "" {
 			args = append(args, "--auth-token", cfg.authTokenOpts)
+		}
+
+		if cfg.v2deprecation != "" {
+			args = append(args, "--v2-deprecation", cfg.v2deprecation)
 		}
 
 		etcdCfgs[i] = &etcdServerProcessConfig{
