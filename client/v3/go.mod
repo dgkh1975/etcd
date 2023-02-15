@@ -6,7 +6,7 @@ require (
 	github.com/dustin/go-humanize v1.0.0
 	github.com/google/uuid v1.1.2
 	github.com/grpc-ecosystem/go-grpc-prometheus v1.2.0
-	github.com/prometheus/client_golang v1.5.1
+	github.com/prometheus/client_golang v1.11.1
 	go.etcd.io/etcd/api/v3 v3.5.0-pre
 	go.etcd.io/etcd/pkg/v3 v3.5.0-pre
 	go.uber.org/zap v1.16.0
