@@ -17,10 +17,10 @@ require (
 	github.com/dustin/go-humanize v1.0.0
 	github.com/etcd-io/gofail v0.0.0-20190801230047-ad7f989257ca
 	github.com/gogo/protobuf v1.3.1
-	github.com/golang/protobuf v1.3.5
+	github.com/golang/protobuf v1.4.3
 	github.com/grpc-ecosystem/go-grpc-prometheus v1.2.0
 	github.com/grpc-ecosystem/grpc-gateway v1.14.6
-	github.com/prometheus/client_golang v1.5.1
+	github.com/prometheus/client_golang v1.11.1
 	github.com/soheilhy/cmux v0.1.4
 	github.com/spf13/cobra v1.1.1
 	github.com/spf13/pflag v1.0.5
