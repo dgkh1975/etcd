@@ -8,8 +8,8 @@ require (
 	github.com/dustin/go-humanize v1.0.0
 	github.com/spf13/pflag v1.0.5
 	go.uber.org/zap v1.16.0
-	golang.org/x/sys v0.0.0-20201009025420-dfb3f7c4e634
-	google.golang.org/grpc v1.29.1
+	golang.org/x/sys v0.7.0
+	google.golang.org/grpc v1.56.3
 )
 
 replace (
